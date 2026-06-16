@@ -31,9 +31,32 @@ const firebaseConfig = {
   measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
 }
 
-const app = initializeApp(firebaseConfig)
-const auth = getAuth(app)
-const db = getFirestore(app)
+const trimmedFirebaseConfig = Object.fromEntries(
+  Object.entries(firebaseConfig).map(([key, value]) => [key, typeof value === 'string' ? value.trim() : value])
+)
+
+const hasFirebaseConfig = Boolean(
+  trimmedFirebaseConfig.apiKey &&
+  trimmedFirebaseConfig.projectId &&
+  trimmedFirebaseConfig.appId
+)
+
+let app = null
+let auth = null
+let db = null
+
+if (hasFirebaseConfig) {
+  try {
+    app = initializeApp(trimmedFirebaseConfig)
+    auth = getAuth(app)
+    db = getFirestore(app)
+  } catch (error) {
+    console.warn('Firebase initialization failed:', error.message)
+    app = null
+    auth = null
+    db = null
+  }
+}
 
 const formatError = (error) => {
   if (!error) return null
@@ -163,6 +186,7 @@ class SupabaseQuery {
   }
 
   async _fetchAllDocs() {
+    if (!db) return []
     const coll = collection(db, this.table)
     const snapshot = await getDocs(coll)
     return snapshot.docs.map((docItem) => ({ id: docItem.id, ...docItem.data() }))
@@ -189,6 +213,7 @@ class SupabaseQuery {
   }
 
   async _executeFirestoreQuery() {
+    if (!db) return []
     const coll = collection(db, this.table)
     const hasIdFilter = this.filters.some((filter) => filter.field === 'id')
     const hasUnsupportedFilter = this.filters.some((filter) => filter.field === 'id')
@@ -262,6 +287,10 @@ class SupabaseModify {
   }
 
   async insert(records) {
+    if (!db) {
+      return { data: null, error: formatError(new Error('Firestore not configured')) }
+    }
+
     try {
       const items = Array.isArray(records) ? records : [records]
       const inserted = []
@@ -286,6 +315,10 @@ class SupabaseModify {
   }
 
   async update(payload) {
+    if (!db) {
+      return { data: null, error: formatError(new Error('Firestore not configured')) }
+    }
+
     try {
       if (!this.filters.length) {
         throw new Error('Missing filter condition for update()')
@@ -331,6 +364,10 @@ class SupabaseModify {
   }
 
   async delete() {
+    if (!db) {
+      return { data: null, error: formatError(new Error('Firestore not configured')) }
+    }
+
     try {
       if (!this.filters.length) {
         throw new Error('Missing filter condition for delete()')
@@ -377,6 +414,12 @@ const createSubscriptionChannel = (table) => {
       return channel
     },
     subscribe: () => {
+      if (!db) {
+        return {
+          unsubscribe: () => {}
+        }
+      }
+
       const collectionRef = collection(db, table)
       const unsubscribe = onSnapshot(collectionRef, (snapshot) => {
         if (typeof changeCallback === 'function') {
@@ -391,6 +434,7 @@ const createSubscriptionChannel = (table) => {
 }
 
 const getCurrentSession = () => {
+  if (!auth) return null
   const user = auth.currentUser
   return user ? { user: {
     id: user.uid,
@@ -408,6 +452,9 @@ export const supabase = {
       return { data: { session: getCurrentSession() }, error: null }
     },
     onAuthStateChange: (callback) => {
+      if (!auth) {
+        return { data: { subscription: { unsubscribe: () => {} } } }
+      }
       const unsubscribe = onAuthStateChanged(auth, (user) => {
         const event = user ? 'SIGNED_IN' : 'SIGNED_OUT'
         callback(event, user ? { user: {
@@ -421,6 +468,9 @@ export const supabase = {
       return { data: { subscription: { unsubscribe } } }
     },
     signInWithPassword: async ({ email, password }) => {
+      if (!auth) {
+        return { data: null, error: formatError(new Error('Firebase auth not configured')) }
+      }
       try {
         const userCredential = await signInWithEmailAndPassword(auth, email, password)
         return { data: { user: {
@@ -435,6 +485,7 @@ export const supabase = {
       }
     },
     signOut: async () => {
+      if (!auth) return { error: null }
       try {
         await firebaseSignOut(auth)
         return { error: null }
